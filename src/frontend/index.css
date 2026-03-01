@@ -1,0 +1,163 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Sora:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --radius: 0.25rem;
+
+    /* G100 Dark Terminal Palette — OKLCH raw L C H values */
+    /* Base dark backgrounds */
+    --background: 0.08 0.008 260;
+    --foreground: 0.92 0.01 95;
+    --card: 0.11 0.01 260;
+    --card-foreground: 0.92 0.01 95;
+    --popover: 0.12 0.01 260;
+    --popover-foreground: 0.92 0.01 95;
+
+    /* Primary — bright terminal green (LONG signals) */
+    --primary: 0.72 0.19 148;
+    --primary-foreground: 0.08 0.008 260;
+
+    /* Secondary — muted surface */
+    --secondary: 0.15 0.01 260;
+    --secondary-foreground: 0.72 0.01 95;
+
+    /* Muted */
+    --muted: 0.14 0.008 260;
+    --muted-foreground: 0.52 0.008 260;
+
+    /* Accent — terminal cyan */
+    --accent: 0.65 0.15 200;
+    --accent-foreground: 0.08 0.008 260;
+
+    /* Destructive — SHORT signal red */
+    --destructive: 0.62 0.22 25;
+    --destructive-foreground: 0.08 0.008 260;
+
+    /* Border / input */
+    --border: 0.22 0.01 260;
+    --input: 0.18 0.01 260;
+    --ring: 0.72 0.19 148;
+
+    /* Charts — terminal theme */
+    --chart-1: 0.72 0.19 148;
+    --chart-2: 0.62 0.22 25;
+    --chart-3: 0.65 0.15 200;
+    --chart-4: 0.72 0.16 85;
+    --chart-5: 0.58 0.12 280;
+
+    /* Sidebar */
+    --sidebar: 0.10 0.008 260;
+    --sidebar-foreground: 0.85 0.01 95;
+    --sidebar-primary: 0.72 0.19 148;
+    --sidebar-primary-foreground: 0.08 0.008 260;
+    --sidebar-accent: 0.15 0.01 260;
+    --sidebar-accent-foreground: 0.85 0.01 95;
+    --sidebar-border: 0.22 0.01 260;
+    --sidebar-ring: 0.72 0.19 148;
+
+    /* Custom semantic tokens */
+    --color-long: 0.72 0.19 148;       /* Green for LONG */
+    --color-short: 0.62 0.22 25;       /* Red for SHORT */
+    --color-warn: 0.78 0.16 85;        /* Amber for warnings */
+    --color-info: 0.65 0.15 200;       /* Cyan for ENGINE events */
+    --color-purple: 0.62 0.18 290;     /* Purple for STAGE events */
+    --color-surface-1: 0.10 0.008 260;
+    --color-surface-2: 0.13 0.01 260;
+    --color-surface-3: 0.16 0.01 260;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Sora', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+  }
+
+  /* Monospace for all numbers/data */
+  .mono {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+  }
+
+  /* Scrollbar styling — dark terminal */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: oklch(var(--color-surface-1));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: oklch(var(--border));
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: oklch(var(--muted-foreground));
+  }
+}
+
+@layer utilities {
+  .text-long {
+    color: oklch(var(--color-long));
+  }
+  .text-short {
+    color: oklch(var(--color-short));
+  }
+  .text-warn {
+    color: oklch(var(--color-warn));
+  }
+  .text-info {
+    color: oklch(var(--color-info));
+  }
+  .text-stage {
+    color: oklch(var(--color-purple));
+  }
+  .bg-long {
+    background-color: oklch(var(--color-long));
+  }
+  .bg-short {
+    background-color: oklch(var(--color-short));
+  }
+  .bg-warn {
+    background-color: oklch(var(--color-warn));
+  }
+  .bg-surface-1 {
+    background-color: oklch(var(--color-surface-1));
+  }
+  .bg-surface-2 {
+    background-color: oklch(var(--color-surface-2));
+  }
+  .bg-surface-3 {
+    background-color: oklch(var(--color-surface-3));
+  }
+  .border-long {
+    border-color: oklch(var(--color-long) / 0.4);
+  }
+  .border-short {
+    border-color: oklch(var(--color-short) / 0.4);
+  }
+  .glow-long {
+    box-shadow: 0 0 8px oklch(var(--color-long) / 0.3);
+  }
+  .glow-short {
+    box-shadow: 0 0 8px oklch(var(--color-short) / 0.3);
+  }
+
+  /* Touch optimization */
+  .touch-scroll {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+}
