@@ -189,6 +189,72 @@ export function computeStructuralATRSL(
 // Both point to the new STRUCTURAL_ATR model.
 export const computeStructuralSL = computeStructuralATRSL;
 
+// ─── computeLevels — deterministic, purely mechanical ────────────────────────
+
+export interface ComputeLevelsResult {
+  slPrice: number;
+  tp2Price: number;
+  tp1Price?: number;
+  rDist: number;
+  valid: boolean;
+  rejectReason?: string;
+}
+
+/**
+ * Deterministic SL/TP computation from manual parameters (no klines, no ATR).
+ *
+ * LONG:  slPrice = entry × (1 − slPct/100)
+ * SHORT: slPrice = entry × (1 + slPct/100)
+ *
+ * rDist = |entry − slPrice|
+ *
+ * LONG:  tp2Price = entry + rDist × rr
+ * SHORT: tp2Price = entry − rDist × rr
+ *
+ * TP1 (if enableTP1):
+ * LONG:  tp1Price = entry + rDist × tp1RR
+ * SHORT: tp1Price = entry − rDist × tp1RR
+ *
+ * Same input → same output. No randomness. No adaptive logic.
+ */
+export function computeLevels(
+  entry: number,
+  side: "LONG" | "SHORT",
+  slPct: number,
+  rr: number,
+  enableTP1 = false,
+  tp1RR = 1.0,
+): ComputeLevelsResult {
+  const invalid = (reason: string): ComputeLevelsResult => ({
+    slPrice: 0,
+    tp2Price: 0,
+    tp1Price: undefined,
+    rDist: 0,
+    valid: false,
+    rejectReason: reason,
+  });
+
+  if (!Number.isFinite(entry) || entry <= 0) return invalid("INVALID_ENTRY");
+  if (!Number.isFinite(slPct) || slPct <= 0) return invalid("INVALID_SL_PCT");
+  if (!Number.isFinite(rr) || rr <= 0) return invalid("INVALID_RR");
+
+  const slPrice =
+    side === "LONG" ? entry * (1 - slPct / 100) : entry * (1 + slPct / 100);
+
+  const rDist = Math.abs(entry - slPrice);
+
+  if (!Number.isFinite(rDist) || rDist <= 0) return invalid("LEVELS_INVALID");
+
+  const tp2Price = side === "LONG" ? entry + rDist * rr : entry - rDist * rr;
+
+  let tp1Price: number | undefined;
+  if (enableTP1 && Number.isFinite(tp1RR) && tp1RR > 0) {
+    tp1Price = side === "LONG" ? entry + rDist * tp1RR : entry - rDist * tp1RR;
+  }
+
+  return { slPrice, tp2Price, tp1Price, rDist, valid: true };
+}
+
 // ─── Full risk-based sizing pipeline ────────────────────────────────────────
 
 /**

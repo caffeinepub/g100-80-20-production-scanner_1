@@ -1,13 +1,27 @@
-// engine/constants.ts — reliability patch constants
+// engine/constants.ts — all engine constants (single source of truth)
 
+// Fetch timeouts & retry
 export const INIT_UNIVERSE_TIMEOUT_MS = 8000;
 export const INIT_TICKER_TIMEOUT_MS = 8000;
 export const INIT_WARMUP_TIMEOUT_MS = 180_000;
 export const FETCH_RETRY_MAX = 2;
 export const FETCH_RETRY_BASE_DELAY_MS = 350;
-export const UNIVERSE_MIN_REQUIRED = 25;
+
+// Universe
+export const UNIVERSE_MIN_REQUIRED = 20;
 export const MAX_UNIVERSE_HARD_CAP = 300;
+// Universe refresh runs on its own timer, independent of poll cycle
+export const UNIVERSE_REFRESH_MS = 90_000;
+// ExchangeInfo is heavy — cache it for 6 hours
+export const EXCHANGE_INFO_TTL_MS = 21_600_000;
+
+// Warmup
 export const WARMUP_CONCURRENCY = 6;
+export const WARMUP_PROGRESS_INTERVAL_MS = 1000;
+// If no warmup task completes within this window → abort
+export const WARMUP_STALL_ABORT_MS = 30_000;
+
+// Heartbeat — independent of poll cycle
 export const HEARTBEAT_MS = 1000;
 
 // RR Trade Engine constants — immutable, no runtime modification

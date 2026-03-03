@@ -1,6 +1,7 @@
 import { emitEvent } from "../journal/ledger";
 import { BASE_URL, type ScannerConfig } from "./config";
 import {
+  EXCHANGE_INFO_TTL_MS,
   INIT_TICKER_TIMEOUT_MS,
   INIT_UNIVERSE_TIMEOUT_MS,
   MAX_UNIVERSE_HARD_CAP,
@@ -21,8 +22,8 @@ export interface UniverseResult {
   retainedUsed: boolean;
 }
 
-const EXCLUDE_PATTERNS = ["DOWN", "UP", "BULL", "BEAR", "DOM", "HALF", "1000"];
-
+// ── ExchangeInfo TTL cache ────────────────────────────────────────────────────
+// Cached at module level — heavy endpoint, only re-fetched every 6h.
 interface ExchangeInfoSymbol {
   symbol: string;
   contractType: string;
@@ -30,11 +31,54 @@ interface ExchangeInfoSymbol {
   status: string;
 }
 
+interface CachedExchangeInfo {
+  symbols: ExchangeInfoSymbol[];
+  fetchedAt: number; // Date.now()
+}
+
+let _exchangeInfoCache: CachedExchangeInfo | null = null;
+
+export function clearExchangeInfoCache(): void {
+  _exchangeInfoCache = null;
+}
+
+async function getExchangeInfo(
+  runId: number,
+  getCurrentRunId: () => number,
+): Promise<ExchangeInfoSymbol[]> {
+  const now = Date.now();
+  if (
+    _exchangeInfoCache &&
+    now - _exchangeInfoCache.fetchedAt < EXCHANGE_INFO_TTL_MS
+  ) {
+    return _exchangeInfoCache.symbols;
+  }
+
+  if (getCurrentRunId() !== runId) throw new Error("stale runId");
+
+  const raw = await fetchJson(
+    `${BASE_URL}/fapi/v1/exchangeInfo`,
+    INIT_UNIVERSE_TIMEOUT_MS,
+    "exchangeInfo",
+    runId,
+  );
+
+  if (getCurrentRunId() !== runId) throw new Error("stale runId");
+
+  const info = raw as { symbols: ExchangeInfoSymbol[] };
+  _exchangeInfoCache = { symbols: info.symbols ?? [], fetchedAt: now };
+  return _exchangeInfoCache.symbols;
+}
+
+// ── Universe build ────────────────────────────────────────────────────────────
+
 interface Ticker24hr {
   symbol: string;
   quoteVolume: string;
   lastPrice: string;
 }
+
+const EXCLUDE_PATTERNS = ["DOWN", "UP", "BULL", "BEAR", "DOM", "HALF", "1000"];
 
 export async function buildUniverse(
   config: ScannerConfig,
@@ -47,17 +91,13 @@ export async function buildUniverse(
   try {
     if (getCurrentRunId() !== runId) throw new Error("stale runId");
 
-    // Fetch exchangeInfo
-    const exchangeRaw = await fetchJson(
-      `${BASE_URL}/fapi/v1/exchangeInfo`,
-      INIT_UNIVERSE_TIMEOUT_MS,
-      "exchangeInfo",
-      runId,
-    );
+    // ExchangeInfo — uses 6h TTL cache; only fetches when stale
+    const exchangeSymbols = await getExchangeInfo(runId, getCurrentRunId);
+    const totalFromExchange = exchangeSymbols.length;
 
     if (getCurrentRunId() !== runId) throw new Error("stale runId");
 
-    // Fetch ticker24h
+    // Ticker — always fresh (called only by universe refresh, not poll cycle)
     const tickerRaw = await fetchJson(
       `${BASE_URL}/fapi/v1/ticker/24hr`,
       INIT_TICKER_TIMEOUT_MS,
@@ -67,13 +107,10 @@ export async function buildUniverse(
 
     if (getCurrentRunId() !== runId) throw new Error("stale runId");
 
-    const exchangeInfo = exchangeRaw as { symbols: ExchangeInfoSymbol[] };
     const tickers = tickerRaw as Ticker24hr[];
 
-    const totalFromExchange = exchangeInfo.symbols?.length ?? 0;
-
     // Step 1: Base filter
-    const baseFiltered = (exchangeInfo.symbols ?? []).filter((s) => {
+    const baseFiltered = exchangeSymbols.filter((s) => {
       if (s.contractType !== "PERPETUAL") return false;
       if (s.quoteAsset !== "USDT") return false;
       if (s.status !== "TRADING") return false;

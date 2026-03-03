@@ -2,23 +2,6 @@ import { useEngine } from "../engine/engineContext";
 import type { Trade } from "../journal/trades";
 import { formatElapsed, formatPrice, formatTs } from "../utils/format";
 
-function fmtQty(v: number): string {
-  if (!Number.isFinite(v) || v <= 0) return "--";
-  if (v >= 1000) return v.toFixed(0);
-  if (v >= 1) return v.toFixed(4);
-  return v.toFixed(6);
-}
-
-function fmtUsd(v: number, decimals = 2): string {
-  if (!Number.isFinite(v) || v <= 0) return "--";
-  return `$${v.toFixed(decimals)}`;
-}
-
-function fmtLev(v: number): string {
-  if (!Number.isFinite(v) || v <= 0) return "--";
-  return `${v.toFixed(2)}x`;
-}
-
 function TradeRow({ trade }: { trade: Trade }) {
   const now = Date.now();
   const elapsed = now - trade.entryTime;
@@ -110,32 +93,48 @@ function TradeRow({ trade }: { trade: Trade }) {
         </div>
       </div>
 
-      {/* Risk fields — only show if populated */}
-      {isOpen && trade.qty > 0 && (
+      {/* Risk & Leverage Controls fields (v1.0) */}
+      {isOpen && (
         <div className="grid grid-cols-4 gap-1 text-[10px] font-mono">
           <div className="flex flex-col items-center bg-surface-2 rounded p-1">
-            <span className="text-muted-foreground">QTY</span>
-            <span className="text-foreground">{fmtQty(trade.qty)}</span>
-          </div>
-          <div className="flex flex-col items-center bg-surface-2 rounded p-1">
-            <span className="text-muted-foreground">NOTIONAL</span>
-            <span className="text-foreground">
-              {fmtUsd(trade.notionalUSDT, 0)}
+            <span className="text-muted-foreground">LEV</span>
+            <span className="text-warn font-bold">
+              {Number.isFinite(trade.leverageX) && trade.leverageX > 0
+                ? `${Math.round(trade.leverageX)}x`
+                : "--"}
             </span>
           </div>
           <div className="flex flex-col items-center bg-surface-2 rounded p-1">
-            <span className="text-muted-foreground">EFF LEV</span>
+            <span className="text-muted-foreground">SL%</span>
+            <span className="text-muted-foreground">
+              {Number.isFinite(trade.slPct) && trade.slPct > 0
+                ? `${trade.slPct.toFixed(2)}%`
+                : "--"}
+            </span>
+          </div>
+          <div className="flex flex-col items-center bg-surface-2 rounded p-1">
+            <span className="text-muted-foreground">RR</span>
+            <span className="text-foreground">
+              {Number.isFinite(trade.rr) && trade.rr > 0
+                ? `${trade.rr.toFixed(1)}R`
+                : "--"}
+            </span>
+          </div>
+          <div className="flex flex-col items-center bg-surface-2 rounded p-1">
+            <span className="text-muted-foreground">RLRSK%</span>
             <span
               className={
-                trade.effectiveLeverage > 10 ? "text-short" : "text-foreground"
+                trade.realRiskPct >= 10
+                  ? "text-short font-bold"
+                  : trade.realRiskPct >= 5
+                    ? "text-warn"
+                    : "text-foreground"
               }
             >
-              {fmtLev(trade.effectiveLeverage)}
+              {Number.isFinite(trade.realRiskPct) && trade.realRiskPct > 0
+                ? `${trade.realRiskPct.toFixed(2)}%`
+                : "--"}
             </span>
-          </div>
-          <div className="flex flex-col items-center bg-surface-2 rounded p-1">
-            <span className="text-muted-foreground">RISK$</span>
-            <span className="text-warn">{fmtUsd(trade.riskUSDT)}</span>
           </div>
         </div>
       )}

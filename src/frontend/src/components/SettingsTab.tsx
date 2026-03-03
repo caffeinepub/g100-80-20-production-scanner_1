@@ -1,7 +1,7 @@
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
-import type { ScannerConfig } from "../engine/config";
+import type { HtfMode, ScannerConfig } from "../engine/config";
 import { useEngine } from "../engine/engineContext";
 
 function FieldRow({
@@ -107,12 +107,12 @@ export function SettingsTab() {
 
         <FieldRow
           label="Poll Interval (ms)"
-          description="Scan frequency (min 30000)"
+          description="Scan cycle frequency (min 5000; universe refreshes every 90s separately)"
         >
           <NumericInput
             value={local.pollInterval}
-            onChange={(v) => update("pollInterval", Math.max(30000, v))}
-            min={30000}
+            onChange={(v) => update("pollInterval", Math.max(5000, v))}
+            min={5000}
             step={1000}
           />
         </FieldRow>
@@ -131,18 +131,151 @@ export function SettingsTab() {
       </div>
 
       <div className="font-mono text-[9px] text-muted-foreground tracking-widest">
+        LEVERAGE &amp; SL/TP
+      </div>
+
+      <div className="bg-surface-1 border border-border rounded p-3 space-y-0">
+        <div className="py-2 border-b border-border/50">
+          <div className="font-mono text-[9px] text-muted-foreground/70 space-y-0.5">
+            <div>SL = entry × (1 ± slPct/100) — mechanical, no klines</div>
+            <div>TP2 = entry ± (SL dist × RR)</div>
+            <div>RealRisk% = slPct × leverageX — display only, never gates</div>
+          </div>
+        </div>
+
+        <FieldRow
+          label="Leverage (X)"
+          description="Manual leverage (1–10, integer)"
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={1}
+              max={10}
+              step={1}
+              value={local.leverageX ?? 3}
+              onChange={(e) => update("leverageX", Number(e.target.value))}
+              className="w-20 accent-warn"
+              data-ocid="settings.leveragex.toggle"
+            />
+            <span className="font-mono text-[11px] text-foreground w-8 text-right">
+              {local.leverageX ?? 3}x
+            </span>
+          </div>
+        </FieldRow>
+
+        <FieldRow
+          label="SL % (price dist)"
+          description="Stop-loss distance from entry (0.20–5.00)"
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={0.2}
+              max={5.0}
+              step={0.05}
+              value={local.slPct ?? 0.65}
+              onChange={(e) => update("slPct", Number(e.target.value))}
+              className="w-20 accent-warn"
+              data-ocid="settings.slpct.toggle"
+            />
+            <span className="font-mono text-[11px] text-foreground w-10 text-right">
+              {(local.slPct ?? 0.65).toFixed(2)}%
+            </span>
+          </div>
+        </FieldRow>
+
+        <FieldRow
+          label="RR (Risk-Reward)"
+          description="TP2 distance = SL dist × RR (1.0–5.0)"
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={1.0}
+              max={5.0}
+              step={0.1}
+              value={local.rr ?? 3.0}
+              onChange={(e) => update("rr", Number(e.target.value))}
+              className="w-20 accent-warn"
+              data-ocid="settings.rr.toggle"
+            />
+            <span className="font-mono text-[11px] text-foreground w-8 text-right">
+              {(local.rr ?? 3.0).toFixed(1)}R
+            </span>
+          </div>
+        </FieldRow>
+
+        {/* RealRisk display */}
+        <div className="py-2 border-b border-border/50">
+          <div className="flex items-center justify-between">
+            <div className="font-mono text-[11px] text-foreground">
+              RealRisk%
+            </div>
+            <div className="font-mono text-[11px] text-warn">
+              {((local.slPct ?? 0.65) * (local.leverageX ?? 3)).toFixed(2)}%
+              account
+            </div>
+          </div>
+          <div className="font-mono text-[9px] text-muted-foreground mt-0.5">
+            slPct × leverageX — informational only
+          </div>
+        </div>
+
+        {/* Optional TP1 */}
+        <div className="py-2 border-b border-border/50">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={local.enableTP1 ?? false}
+              onChange={(e) => update("enableTP1", e.target.checked)}
+              className="mt-0.5 w-4 h-4 accent-warn cursor-pointer"
+              data-ocid="settings.enabletp1.checkbox"
+            />
+            <div>
+              <div className="font-mono text-[11px] text-foreground">
+                Enable TP1
+              </div>
+              <div className="font-mono text-[9px] text-muted-foreground mt-0.5">
+                Partial close at TP1 level (optional)
+              </div>
+            </div>
+          </label>
+        </div>
+
+        {(local.enableTP1 ?? false) && (
+          <FieldRow
+            label="TP1 RR"
+            description="TP1 distance = SL dist × tp1RR (0.5–3.0)"
+          >
+            <div className="flex items-center gap-2">
+              <input
+                type="range"
+                min={0.5}
+                max={3.0}
+                step={0.1}
+                value={local.tp1RR ?? 1.0}
+                onChange={(e) => update("tp1RR", Number(e.target.value))}
+                className="w-20 accent-warn"
+                data-ocid="settings.tp1rr.toggle"
+              />
+              <span className="font-mono text-[11px] text-foreground w-8 text-right">
+                {(local.tp1RR ?? 1.0).toFixed(1)}R
+              </span>
+            </div>
+          </FieldRow>
+        )}
+      </div>
+
+      <div className="font-mono text-[9px] text-muted-foreground tracking-widest">
         RISK ENGINE
       </div>
 
       <div className="bg-surface-1 border border-border rounded p-3 space-y-0">
         <div className="py-2 border-b border-border/50">
           <div className="font-mono text-[9px] text-muted-foreground/70 space-y-0.5">
-            <div>
-              SL = structural (min/max of last 12 candles) clamped 0.15–2.5%
-            </div>
-            <div>TP1 = entry ± risk × 2.2R (close 50%)</div>
-            <div>TP2 = entry ± risk × 3.0R (close 50%)</div>
             <div>Qty = (Equity × Risk%) / |entry − SL|</div>
+            <div>Effective leverage = Notional / Equity</div>
           </div>
         </div>
 
@@ -225,6 +358,28 @@ export function SettingsTab() {
             <option value={1}>1</option>
             <option value={2}>2</option>
             <option value={3}>3</option>
+          </select>
+        </FieldRow>
+      </div>
+
+      <div className="font-mono text-[9px] text-muted-foreground tracking-widest">
+        FILTER
+      </div>
+
+      <div className="bg-surface-1 border border-border rounded p-3 space-y-0">
+        <FieldRow
+          label="HTF Mode"
+          description="OFF = ignored · SOFT = score bias (−10%) · HARD = strict gate"
+        >
+          <select
+            value={local.htfMode ?? "SOFT"}
+            onChange={(e) => update("htfMode", e.target.value as HtfMode)}
+            className="bg-surface-2 border border-border rounded px-2 py-1 font-mono text-[11px] text-foreground focus:outline-none focus:border-foreground/40"
+            data-ocid="settings.htfmode.select"
+          >
+            <option value="OFF">OFF</option>
+            <option value="SOFT">SOFT</option>
+            <option value="HARD">HARD</option>
           </select>
         </FieldRow>
       </div>

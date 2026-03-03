@@ -24,21 +24,19 @@ function RsiCell({ value, isLong }: { value: number; isLong: boolean }) {
   return <span className={color}>{formatRsi(v)}</span>;
 }
 
-function fmtQty(v: number): string {
+function fmtPct(v: number): string {
   if (!Number.isFinite(v) || v <= 0) return "--";
-  if (v >= 1000) return v.toFixed(0);
-  if (v >= 1) return v.toFixed(2);
-  return v.toFixed(4);
+  return `${v.toFixed(2)}%`;
 }
 
-function fmtLev(v: number): string {
+function fmtRR(v: number): string {
   if (!Number.isFinite(v) || v <= 0) return "--";
-  return `${v.toFixed(1)}x`;
+  return `${v.toFixed(1)}R`;
 }
 
-function fmtRiskUsd(v: number): string {
+function fmtLevX(v: number): string {
   if (!Number.isFinite(v) || v <= 0) return "--";
-  return `$${v.toFixed(2)}`;
+  return `${Math.round(v)}x`;
 }
 
 function Top5Table({
@@ -103,11 +101,11 @@ function Top5Table({
                   "1H",
                   "ENTRY",
                   "SL",
-                  "TP1",
                   "TP2",
-                  "QTY",
-                  "RISK$",
+                  "SL%",
+                  "RR",
                   "LEV",
+                  "RLRSK%",
                 ].map((h) => (
                   <th
                     key={h}
@@ -119,61 +117,70 @@ function Top5Table({
               </tr>
             </thead>
             <tbody>
-              {candidates.map((c, i) => (
-                <tr
-                  key={c.symbol}
-                  onClick={() => onRowClick(c)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") onRowClick(c);
-                  }}
-                  tabIndex={0}
-                  className={`border-b border-border/50 cursor-pointer transition-colors hover:bg-surface-3 ${
-                    i % 2 === 0 ? "bg-surface-1/50" : ""
-                  } ${!c.riskCalcValid ? "opacity-60" : ""}`}
-                >
-                  <td className={`px-1.5 py-1.5 font-bold ${accentClass}`}>
-                    {c.symbol.replace("USDT", "")}
-                  </td>
-                  <td className="px-1.5 py-1.5 text-foreground">
-                    {formatScore(c.score)}
-                  </td>
-                  <td className="px-1.5 py-1.5">
-                    <RsiCell value={c.rsi1m} isLong={isLong} />
-                  </td>
-                  <td className="px-1.5 py-1.5">
-                    <RsiCell value={c.rsi5m} isLong={isLong} />
-                  </td>
-                  <td className="px-1.5 py-1.5">
-                    <RsiCell value={c.rsi15m} isLong={isLong} />
-                  </td>
-                  <td className="px-1.5 py-1.5">
-                    <RsiCell value={c.rsi1h} isLong={isLong} />
-                  </td>
-                  <td className="px-1.5 py-1.5 text-foreground">
-                    {formatPrice(c.entry)}
-                  </td>
-                  <td className="px-1.5 py-1.5 text-short">
-                    {formatPrice(c.sl)}
-                  </td>
-                  <td className="px-1.5 py-1.5 text-long">
-                    {formatPrice(c.tp1)}
-                  </td>
-                  <td className="px-1.5 py-1.5 text-long">
-                    {formatPrice(c.tp2)}
-                  </td>
-                  <td className="px-1.5 py-1.5 text-foreground">
-                    {fmtQty(c.qty)}
-                  </td>
-                  <td className="px-1.5 py-1.5 text-warn">
-                    {fmtRiskUsd(c.riskUSDT)}
-                  </td>
-                  <td
-                    className={`px-1.5 py-1.5 ${c.effectiveLeverage > 10 ? "text-short" : "text-foreground"}`}
+              {candidates.map((c, i) => {
+                const levX =
+                  (c as typeof c & { leverageX?: number }).leverageX ?? 3;
+                const slPctV = (c as typeof c & { slPct?: number }).slPct ?? 0;
+                const rrV = (c as typeof c & { rr?: number }).rr ?? 0;
+                const realRisk =
+                  (c as typeof c & { realRiskPct?: number }).realRiskPct ??
+                  slPctV * levX;
+                return (
+                  <tr
+                    key={c.symbol}
+                    onClick={() => onRowClick(c)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") onRowClick(c);
+                    }}
+                    tabIndex={0}
+                    className={`border-b border-border/50 cursor-pointer transition-colors hover:bg-surface-3 ${
+                      i % 2 === 0 ? "bg-surface-1/50" : ""
+                    } ${!c.riskCalcValid ? "opacity-60" : ""}`}
                   >
-                    {fmtLev(c.effectiveLeverage)}
-                  </td>
-                </tr>
-              ))}
+                    <td className={`px-1.5 py-1.5 font-bold ${accentClass}`}>
+                      {c.symbol.replace("USDT", "")}
+                    </td>
+                    <td className="px-1.5 py-1.5 text-foreground">
+                      {formatScore(c.score)}
+                    </td>
+                    <td className="px-1.5 py-1.5">
+                      <RsiCell value={c.rsi1m} isLong={isLong} />
+                    </td>
+                    <td className="px-1.5 py-1.5">
+                      <RsiCell value={c.rsi5m} isLong={isLong} />
+                    </td>
+                    <td className="px-1.5 py-1.5">
+                      <RsiCell value={c.rsi15m} isLong={isLong} />
+                    </td>
+                    <td className="px-1.5 py-1.5">
+                      <RsiCell value={c.rsi1h} isLong={isLong} />
+                    </td>
+                    <td className="px-1.5 py-1.5 text-foreground">
+                      {formatPrice(c.entry)}
+                    </td>
+                    <td className="px-1.5 py-1.5 text-short">
+                      {formatPrice(c.sl)}
+                    </td>
+                    <td className="px-1.5 py-1.5 text-long">
+                      {formatPrice(c.tp2)}
+                    </td>
+                    <td className="px-1.5 py-1.5 text-muted-foreground">
+                      {fmtPct(slPctV)}
+                    </td>
+                    <td className="px-1.5 py-1.5 text-foreground">
+                      {fmtRR(rrV)}
+                    </td>
+                    <td className="px-1.5 py-1.5 text-warn font-bold">
+                      {fmtLevX(levX)}
+                    </td>
+                    <td
+                      className={`px-1.5 py-1.5 font-bold ${realRisk >= 10 ? "text-short" : realRisk >= 5 ? "text-warn" : "text-foreground"}`}
+                    >
+                      {fmtPct(realRisk)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

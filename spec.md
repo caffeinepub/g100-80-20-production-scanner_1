@@ -1,57 +1,40 @@
 # G100 80/20 Production Scanner
 
 ## Current State
-
-Full-stack scanner with:
-- Engine: universe builder, warmup, scheduler with runId guards, heartbeat, 80/20 cycle
-- Scanner: Wilder RSI, HTF gate (EMA9/EMA20 + RSI on 5m), Stage A/B, FinalScore, structural+ATR SL model
-- Journal: IndexedDB `g100-ledger` (5 stores: ledgerEvents, trades, snapshots, metricsDaily, settings), paper trade lifecycle (open/TP1/TP2/SL/timeStop), RR metrics
-- Auto-entry: fully automatic, blocked by HTF EMA filter (ENTRY_BLOCKED_HTF)
-- UI: StatusBar, Top5, Trades, Log, Stats (RR metrics), Settings, Export
-
-The HTF gate in `tryAutoEntry` (scheduler.ts) blocks trades where EMA9_5m < EMA20_5m or RSI_5m < 50 (LONG), or inverse (SHORT). These blocked candidates have already passed StageA + StageB + risk calc.
+Frontend-only React+TS crypto scanner. Engine: universe builder, warmup, scheduler with runId guards, heartbeat. Scanner: RSI (Wilder), Stage A/B, HTF soft/hard/off mode, FinalScore. Journal: IndexedDB (5 stores), paper trades (open/TP1/TP2/SL/timeStop), RR metrics, shadow stats. Config has: equityUSDT, riskPct, maxLeverage — risk-based sizing via `computeRiskCalc` using structural+ATR SL. Trade record has: qty, notionalUSDT, effectiveLeverage, marginUsed. SL is computed from klines (last 12 candles + ATR). TP1/TP2 fixed at 2.2R/3.0R.
 
 ## Requested Changes (Diff)
 
 ### Add
-
-- `ScannerConfig.enableShadowStats: boolean` (default true)
-- `ShadowTrade` interface in new file `journal/shadowTrades.ts`
-- IndexedDB store `shadow_trades` in `journal/idb.ts` (DB version bump to 2)
-- `openShadowTrade()` and `updateShadowTrades()` functions in `journal/shadowTrades.ts` — reuse same TP/SL evaluation logic as real trades, closed-candle only
-- `computeShadowMetrics()` in `journal/shadowMetrics.ts`
-- Shadow engine hook in `scheduler.ts`: after ENTRY_BLOCKED_HTF, if enableShadowStats, create ShadowTrade
-- Events: `SHADOW_ENTRY_CREATED`, `SHADOW_TRADE_CLOSED` (with result)
-- `ShadowStatsPanel` component in `components/ShadowStatsPanel.tsx` — displayed below existing stats in StatsTab
-- Checkbox "Shadow Stats (HTF_OFF Simulation)" in SettingsTab
-- Shadow trades included in export
-- Engine context wired: `shadowTrades`, `shadowMetrics` state
+- Config keys: `leverageX` (int, 1–10, default 3), `slPct` (float, 0.20–5.00, default 0.65), `rr` (float, 1.0–5.0, default 3.0), `enableTP1` (bool, default false), `tp1RR` (float, 0.5–3.0, default 1.0)
+- `computeLevels(entry, side, slPct, rr, enableTP1?, tp1RR?)` in riskCalc.ts — purely mechanical, no klines/ATR/structure
+- `realRiskPct = slPct * leverageX` — display-only field, never gates
+- Settings UI: sliders/inputs for all 5 new params under new "LEVERAGE & SL/TP" section
+- Trade record fields: `leverageX`, `slPct`, `rr`, `slPrice`, `tp2Price`, `tp1Price?`, `realRiskPct`
+- Log event: `TRADE_OPEN { symbol, side, entry, slPct, rr, leverageX, slPrice, tp2Price, realRiskPct }`
+- Top5 table columns: SL%, RR, LevX, RealRisk% (replacing Qty/Risk$/Lev columns with new set)
+- TradesTab open trade rows: show leverageX, slPct, rr, slPrice/tp2Price, realRiskPct
 
 ### Modify
-
-- `engine/config.ts` — add `enableShadowStats: boolean` to `ScannerConfig` and `DEFAULT_CONFIG`
-- `journal/idb.ts` — bump DB_VERSION to 2, add `shadow_trades` object store in onupgradeneeded
-- `journal/ledger.ts` — add `SHADOW_ENTRY_CREATED` and `SHADOW_TRADE_CLOSED` to EVENT_CATEGORIES map
-- `engine/scheduler.ts` — in `tryAutoEntry`, after ENTRY_BLOCKED_HTF block: if enableShadowStats, call `tryOpenShadowTrade`; in `runCycle`, call `updateShadowTrades` per tick
-- `engine/engineContext.tsx` — add shadowTrades/shadowMetrics state, wire into context value and export
-- `components/StatsTab.tsx` — render `<ShadowStatsPanel>` below existing RR stats
-- `components/SettingsTab.tsx` — add Shadow Stats checkbox
-- `engine/engineContext.tsx` — include shadowTrades in exportData payload
+- `ScannerConfig` interface — add 5 new keys
+- `DEFAULT_CONFIG` — add defaults for 5 new keys
+- `computeFinalScore` — use `computeLevels` instead of `computeRiskCalc` for sl/tp1/tp2; retain risk sizing fields from existing `computeRiskCalc` call
+- `tryAutoEntry` in scheduler — use `computeLevels` for SL/TP on enriched candidate
+- `openTrade` in trades.ts — write new fields to Trade record, emit updated TRADE_OPEN log
+- `Trade` interface — add new fields
+- Settings UI — add new section above RISK ENGINE
+- Top5Panel — replace/add columns for new fields
+- TradesTab — show new fields on open trade rows
 
 ### Remove
-
-Nothing removed. This is purely additive.
+- Nothing removed. All existing logic untouched (StageA/B, score, HTF, universe, warmup, existing risk sizing retained for qty/notional/leverage display).
 
 ## Implementation Plan
-
-1. Add `enableShadowStats` to `ScannerConfig` + DEFAULT_CONFIG
-2. Bump IDB to version 2, add `shadow_trades` store
-3. Add `SHADOW_ENTRY_CREATED` + `SHADOW_TRADE_CLOSED` to ledger event categories
-4. Create `journal/shadowTrades.ts`: ShadowTrade interface, `openShadowTrade()`, `updateShadowTrades()` — reuse same SL/TP price hit logic, closed-candle only, no new Binance calls
-5. Create `journal/shadowMetrics.ts`: `ShadowMetrics` interface + `computeShadowMetrics()`
-6. Wire shadow engine into `scheduler.ts`: after ENTRY_BLOCKED_HTF, call tryOpenShadowTrade; in runCycle, call updateShadowTrades with current prices
-7. Add shadow state + callbacks to EngineCallbacks and EngineContext
-8. Create `components/ShadowStatsPanel.tsx`: panel with 7 metrics + STRICT vs SHADOW Net R comparison row
-9. Add shadow panel to StatsTab below existing stats
-10. Add checkbox to SettingsTab
-11. Include shadow trades in exportData
+1. `engine/config.ts` — add 5 keys to `ScannerConfig` + `DEFAULT_CONFIG`
+2. `scanner/riskCalc.ts` — add `computeLevels()` function (pure, no imports needed beyond constants)
+3. `journal/trades.ts` — add new fields to `Trade` interface; update `openTrade` to call `computeLevels` for SL/TP and save new fields; update `TRADE_OPENED` event payload
+4. `scanner/finalScore.ts` — call `computeLevels` for sl/tp1/tp2 on `ScoredCandidate`; add `slPct`, `rr`, `leverageX`, `realRiskPct` fields
+5. `engine/scheduler.ts` — pass leverageX/slPct/rr/enableTP1/tp1RR from config into enriched candidate; use computeLevels in tryAutoEntry
+6. `components/SettingsTab.tsx` — add "LEVERAGE & SL/TP" section with sliders for 5 new params
+7. `components/Top5Panel.tsx` — add SL%, RR, LevX, RealRisk% columns
+8. `components/TradesTab.tsx` — show leverageX, slPct, rr, realRiskPct on open trades

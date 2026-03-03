@@ -1,3 +1,4 @@
+import type { HtfMode } from "../engine/config";
 import { useEngine } from "../engine/engineContext";
 import type { EngineState } from "../engine/scheduler";
 import type { Regime } from "../scanner/regime";
@@ -20,6 +21,12 @@ function regimeBadge(regime: Regime) {
   return "text-muted-foreground border-border";
 }
 
+function htfModeBadgeClass(mode: HtfMode) {
+  if (mode === "HARD") return "border-short text-short";
+  if (mode === "SOFT") return "border-warn text-warn";
+  return "border-border text-muted-foreground";
+}
+
 export function StatusBar() {
   const {
     engineState,
@@ -35,6 +42,8 @@ export function StatusBar() {
     requestWakeLock,
     start,
   } = useEngine();
+
+  const htfMode = config.htfMode ?? "SOFT";
 
   const now = Date.now();
   const sleepRisk =
@@ -89,6 +98,12 @@ export function StatusBar() {
             UNIVERSE RETAINED
           </span>
         )}
+
+        <span
+          className={`font-mono text-[10px] border rounded px-1 py-0.5 ${htfModeBadgeClass(htfMode)}`}
+        >
+          HTF:{htfMode}
+        </span>
 
         {sleepRisk && (
           <span className="font-mono text-[10px] text-short animate-pulse">

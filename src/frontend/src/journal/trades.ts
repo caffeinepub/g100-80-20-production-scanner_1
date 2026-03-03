@@ -39,6 +39,14 @@ export interface Trade {
   notionalUSDT: number;
   effectiveLeverage: number;
   marginUsed: number;
+  // Risk & Leverage Controls (v1.0)
+  leverageX: number;
+  slPct: number;
+  rr: number;
+  slPrice: number; // = sl (alias for explicit display)
+  tp2Price: number; // = tp2 (alias for explicit display)
+  tp1Price?: number; // only if enableTP1=true
+  realRiskPct: number; // slPct × leverageX — display only
 }
 
 /**
@@ -155,6 +163,18 @@ export async function openTrade(
     return null;
   }
 
+  // Risk & Leverage Controls fields from candidate
+  const leverageX =
+    (candidate as typeof candidate & { leverageX?: number }).leverageX ?? 3;
+  const slPct =
+    (candidate as typeof candidate & { slPct?: number }).slPct ?? 0.65;
+  const rrVal = (candidate as typeof candidate & { rr?: number }).rr ?? 3.0;
+  const realRiskPct =
+    (candidate as typeof candidate & { realRiskPct?: number }).realRiskPct ??
+    slPct * leverageX;
+  const tp1PriceField = (candidate as typeof candidate & { tp1Price?: number })
+    .tp1Price;
+
   const now = Date.now();
   const trade: Trade = {
     id: `${candidate.symbol}-${side}-${now}`,
@@ -181,6 +201,14 @@ export async function openTrade(
     notionalUSDT: candidate.notionalUSDT,
     effectiveLeverage: candidate.effectiveLeverage,
     marginUsed: candidate.marginUsed,
+    // Risk & Leverage Controls (v1.0)
+    leverageX,
+    slPct,
+    rr: rrVal,
+    slPrice: sl,
+    tp2Price: tp2,
+    tp1Price: tp1PriceField,
+    realRiskPct,
   };
 
   await idbPut("trades", trade);
@@ -203,6 +231,13 @@ export async function openTrade(
       effectiveLeverage: trade.effectiveLeverage,
       marginUsed: trade.marginUsed,
       runId,
+      // v1.0 risk & leverage log
+      slPct: trade.slPct,
+      rr: trade.rr,
+      leverageX: trade.leverageX,
+      slPrice: trade.slPrice,
+      tp2Price: trade.tp2Price,
+      realRiskPct: trade.realRiskPct,
     },
     "TRADES",
   );
@@ -211,10 +246,14 @@ export async function openTrade(
   emitEvent(
     "SL_MODEL",
     {
-      model: "STRUCTURAL_ATR",
+      model: "MANUAL_SL_PCT",
       symbol: trade.symbol,
+      slPct: trade.slPct,
+      rr: trade.rr,
+      leverageX: trade.leverageX,
       sl: trade.sl,
       entry: trade.entryPrice,
+      realRiskPct: trade.realRiskPct,
     },
     "TRADES",
   );

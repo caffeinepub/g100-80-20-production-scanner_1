@@ -1,6 +1,6 @@
 import type { ScannerConfig } from "../engine/config";
 import type { RsiBuffers } from "../engine/warmup";
-import { computeRiskCalc } from "./riskCalc";
+import { computeLevels, computeRiskCalc } from "./riskCalc";
 import type { StageBResult } from "./stageB";
 
 export interface ScoredCandidate {
@@ -24,6 +24,12 @@ export interface ScoredCandidate {
   notionalUSDT: number;
   marginUsed: number;
   riskCalcValid: boolean;
+  // Risk & Leverage Controls (v1.0)
+  leverageX: number;
+  slPct: number;
+  rr: number;
+  realRiskPct: number; // slPct × leverageX — display only, never gates
+  tp1Price?: number; // only set when enableTP1=true
 }
 
 export function computeFinalScore(
@@ -50,7 +56,7 @@ export function computeFinalScore(
       (bufData as unknown as { _rawKlines?: Record<string, unknown[][]> })
         ?._rawKlines?.[candidate.symbol] ?? [];
 
-    // Compute risk sizing
+    // Compute risk sizing (for qty/notional/effectiveLeverage display)
     const riskResult = computeRiskCalc({
       entry,
       side,
@@ -60,6 +66,15 @@ export function computeFinalScore(
       maxLeverage: config.maxLeverage,
       symbol: candidate.symbol,
     });
+
+    // Deterministic SL/TP from manual leverage & SL% params (v1.0)
+    const leverageX = config.leverageX ?? 3;
+    const slPct = config.slPct ?? 0.65;
+    const rr = config.rr ?? 3.0;
+    const enableTP1 = config.enableTP1 ?? false;
+    const tp1RR = config.tp1RR ?? 1.0;
+    const levels = computeLevels(entry, side, slPct, rr, enableTP1, tp1RR);
+    const realRiskPct = slPct * leverageX;
 
     // Base score from stageA
     const base =
@@ -90,9 +105,10 @@ export function computeFinalScore(
       rsi15m: candidate.rsi15m,
       rsi1h: candidate.rsi1h,
       entry,
-      sl: riskResult.sl,
-      tp1: riskResult.tp1,
-      tp2: riskResult.tp2,
+      // SL/TP from computeLevels (manual params)
+      sl: levels.valid ? levels.slPrice : riskResult.sl,
+      tp1: levels.tp1Price ?? (levels.valid ? levels.tp2Price : riskResult.tp1),
+      tp2: levels.valid ? levels.tp2Price : riskResult.tp2,
       pressure: absorptionSigned,
       lastPrice: candidate.lastPrice,
       qty: riskResult.qty,
@@ -100,7 +116,13 @@ export function computeFinalScore(
       effectiveLeverage: riskResult.effectiveLeverage,
       notionalUSDT: riskResult.notionalUSDT,
       marginUsed: riskResult.marginUsed,
-      riskCalcValid: riskResult.valid,
+      riskCalcValid: riskResult.valid && levels.valid,
+      // Risk & Leverage Controls fields
+      leverageX,
+      slPct,
+      rr,
+      realRiskPct,
+      tp1Price: levels.tp1Price,
     };
   });
 

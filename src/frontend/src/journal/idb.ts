@@ -1,5 +1,5 @@
 const DB_NAME = "g100-ledger";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbInstance: IDBDatabase | null = null;
 
@@ -33,6 +33,10 @@ export function openDB(): Promise<IDBDatabase> {
       // v2: shadow trades store — separate from real trades, never mixed
       if (!db.objectStoreNames.contains("shadow_trades")) {
         db.createObjectStore("shadow_trades", { keyPath: "id" });
+      }
+      // v3: HTF backtest results — completely separate from live data
+      if (!db.objectStoreNames.contains("htf_backtest_results")) {
+        db.createObjectStore("htf_backtest_results", { keyPath: "id" });
       }
     };
 

@@ -1,4 +1,5 @@
 import { useEngine } from "../engine/engineContext";
+import { HtfBacktestPanel } from "./HtfBacktestPanel";
 import { ShadowStatsPanel } from "./ShadowStatsPanel";
 
 function MetricCard({
@@ -43,6 +44,7 @@ export function StatsTab() {
           </div>
         </div>
         <ShadowStatsPanel />
+        <HtfBacktestPanel />
       </div>
     );
   }
@@ -129,6 +131,9 @@ export function StatsTab() {
 
       {/* Shadow Stats Panel — HTF OFF simulation */}
       <ShadowStatsPanel />
+
+      {/* HTF 4W Backtest Panel — additive only, standalone */}
+      <HtfBacktestPanel />
     </div>
   );
 }

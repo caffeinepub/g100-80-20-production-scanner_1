@@ -1,10 +1,6 @@
 import { idbPut } from "../journal/idb";
 import { emitEvent } from "../journal/ledger";
-import {
-  type ShadowTrade,
-  openShadowTrade,
-  updateShadowTrades,
-} from "../journal/shadowTrades";
+import { type ShadowTrade, updateShadowTrades } from "../journal/shadowTrades";
 import { openTrade, updateTrades } from "../journal/trades";
 import type { Trade } from "../journal/trades";
 import {
@@ -12,14 +8,18 @@ import {
   computeFinalScore,
   getMedianVolume,
 } from "../scanner/finalScore";
-import { checkHtfGate } from "../scanner/htfGate";
+import { evaluateHtfGate } from "../scanner/htfGate";
 import { type Regime, detectRegime } from "../scanner/regime";
-import { computeRiskCalc } from "../scanner/riskCalc";
+import { computeLevels, computeRiskCalc } from "../scanner/riskCalc";
 import { type StageACandidate, runStageA } from "../scanner/stageA";
 import { runStageB } from "../scanner/stageB";
-import { FULL_SCAN_INTERVAL_CYCLES, type ScannerConfig } from "./config";
+import { STAGE_A_K, type ScannerConfig } from "./config";
 import { BASE_URL } from "./config";
-import { HEARTBEAT_MS, STRUCTURAL_SL_CANDLES } from "./constants";
+import {
+  HEARTBEAT_MS,
+  STRUCTURAL_SL_CANDLES,
+  UNIVERSE_REFRESH_MS,
+} from "./constants";
 import { fetchWithQueue } from "./fetcher";
 import { type UniverseSymbol, buildUniverse } from "./universe";
 import { type RsiBuffers, warmupUniverse } from "./warmup";
@@ -46,8 +46,12 @@ export interface EngineInternals {
   tickCounter: number;
   lastTickTs: string;
   lastHeartbeatMs: number;
+  /** Independent 1s heartbeat timer */
   heartbeatTimer: ReturnType<typeof setInterval> | null;
+  /** Poll cycle timer (scan only, no universe calls) */
   pollTimer: ReturnType<typeof setTimeout> | null;
+  /** Universe refresh timer — separate from poll, runs every 90s */
+  universeRefreshTimer: ReturnType<typeof setInterval> | null;
   stageAZeroCounter: number;
   rescueMode: boolean;
   /** symbol → timestamp when cooldown expires */
@@ -88,12 +92,17 @@ export function createEngineInternals(): EngineInternals {
     lastHeartbeatMs: 0,
     heartbeatTimer: null,
     pollTimer: null,
+    universeRefreshTimer: null,
     stageAZeroCounter: 0,
     rescueMode: false,
     cooldownMap: new Map(),
     warmupCompleted: false,
   };
 }
+
+// ── Persistent scheduler state ────────────────────────────────────────────────
+let intervalHandle: number | null = null;
+let isTickRunning = false;
 
 function stopTimers(internals: EngineInternals) {
   if (internals.heartbeatTimer !== null) {
@@ -104,14 +113,30 @@ function stopTimers(internals: EngineInternals) {
     clearTimeout(internals.pollTimer);
     internals.pollTimer = null;
   }
+  if (internals.universeRefreshTimer !== null) {
+    clearInterval(internals.universeRefreshTimer);
+    internals.universeRefreshTimer = null;
+  }
 }
 
+function stopScheduler() {
+  if (intervalHandle !== null) {
+    clearInterval(intervalHandle);
+    intervalHandle = null;
+  }
+  isTickRunning = false;
+}
+
+// ── Heartbeat — independent of fetch/scan cycle ───────────────────────────────
 function startHeartbeat(
   internals: EngineInternals,
   callbacks: EngineCallbacks,
   localRunId: number,
 ) {
-  stopTimers(internals); // clear any old timers first
+  if (internals.heartbeatTimer !== null) {
+    clearInterval(internals.heartbeatTimer);
+    internals.heartbeatTimer = null;
+  }
 
   internals.heartbeatTimer = setInterval(() => {
     if (internals.runId !== localRunId) {
@@ -128,6 +153,46 @@ function startHeartbeat(
       internals.lastHeartbeatMs,
     );
   }, HEARTBEAT_MS);
+}
+
+// ── Universe refresh timer — 90s, independent of poll cycle ──────────────────
+function startUniverseRefresh(
+  internals: EngineInternals,
+  config: ScannerConfig,
+  callbacks: EngineCallbacks,
+  localRunId: number,
+) {
+  if (internals.universeRefreshTimer !== null) {
+    clearInterval(internals.universeRefreshTimer);
+    internals.universeRefreshTimer = null;
+  }
+
+  internals.universeRefreshTimer = setInterval(async () => {
+    if (internals.runId !== localRunId) {
+      clearInterval(internals.universeRefreshTimer!);
+      internals.universeRefreshTimer = null;
+      return;
+    }
+
+    try {
+      const result = await buildUniverse(
+        config,
+        internals.universe,
+        localRunId,
+        () => internals.runId,
+      );
+      if (internals.runId !== localRunId) return;
+      internals.universe = result.symbols;
+      callbacks.onUniverseUpdate(
+        result.symbols.length,
+        result.eligibleCount,
+        result.filterLevelUsed,
+        result.retainedUsed,
+      );
+    } catch {
+      // fetch fail already handled and logged inside buildUniverse
+    }
+  }, UNIVERSE_REFRESH_MS);
 }
 
 // Minimum candles to retain per symbol for risk calc (last 12 raw + headroom)
@@ -197,7 +262,6 @@ function attachRawKlines(
   rsiBuffers: RsiBuffers,
   rawKlineBuffers: RawKlineBuffers,
 ): void {
-  // Build a consolidated raw klines lookup: symbol → "1m" raw klines
   const lookup: Record<string, unknown[][]> = {};
   for (const [symbol, tfMap] of rawKlineBuffers.entries()) {
     lookup[symbol] = tfMap["1m"] ?? [];
@@ -305,11 +369,14 @@ export async function runEngineStart(
     );
     callbacks.onStateChange("RUNNING");
 
-    // Start independent heartbeat timer (separate from poll cycle)
+    // 1) Independent heartbeat timer (1s, never depends on fetch)
     startHeartbeat(internals, callbacks, localRunId);
 
-    // Start polling loop
-    await runPollingLoop(
+    // 2) Universe refresh timer (90s, ticker only, no exchangeInfo)
+    startUniverseRefresh(internals, config, callbacks, localRunId);
+
+    // 3) Poll cycle (scan only — StageA/B/score/trades, no universe calls)
+    startScheduler(
       internals,
       config,
       callbacks,
@@ -329,8 +396,7 @@ export async function runEngineStart(
 
 /**
  * Auto-entry gate: attempt to open a paper trade for a scored candidate.
- * All preconditions must pass; emits AUTO_ENTRY_ATTEMPT, AUTO_ENTRY_SUCCESS or AUTO_ENTRY_BLOCKED.
- * If blocked by HTF filter and enableShadowStats is true, creates a shadow trade instead.
+ * HTF mode (OFF/SOFT/HARD) is applied upstream in runCycle before this.
  */
 async function tryAutoEntry(
   candidate: ScoredCandidate,
@@ -338,7 +404,6 @@ async function tryAutoEntry(
   config: ScannerConfig,
   callbacks: EngineCallbacks,
   openTrades: Trade[],
-  openShadowTrades: ShadowTrade[],
   localRunId: number,
 ): Promise<{ trade: Trade | null; shadowTrade: ShadowTrade | null }> {
   const sym = candidate.symbol;
@@ -419,7 +484,7 @@ async function tryAutoEntry(
     return { trade: null, shadowTrade: null };
   }
 
-  // 7) Re-compute risk calc with current price to ensure freshness
+  // 7) Re-compute risk calc with current price to ensure freshness (for qty/notional)
   const rawKlines: unknown[][] =
     (
       internals.rsiBuffers.get(sym) as unknown as {
@@ -437,87 +502,58 @@ async function tryAutoEntry(
     symbol: sym,
   });
 
-  if (!riskResult.valid) {
+  // 7b) Compute SL/TP from manual leverage & SL% params (v1.0 — no klines needed)
+  const leverageX = config.leverageX ?? 3;
+  const slPct = config.slPct ?? 0.65;
+  const rr = config.rr ?? 3.0;
+  const enableTP1 = config.enableTP1 ?? false;
+  const tp1RR = config.tp1RR ?? 1.0;
+  const levels = computeLevels(
+    candidate.entry,
+    candidate.side,
+    slPct,
+    rr,
+    enableTP1,
+    tp1RR,
+  );
+  const realRiskPct = slPct * leverageX;
+
+  if (!levels.valid) {
     emitEvent(
       "AUTO_ENTRY_BLOCKED",
       {
         symbol: sym,
-        reason: "RISK_CALC_REJECT",
-        detail: riskResult.rejectReason,
+        reason: "LEVELS_INVALID",
+        detail: levels.rejectReason,
       },
       "TRADES",
     );
     return { trade: null, shadowTrade: null };
   }
 
-  // 8) Build enriched candidate with fresh risk calc
+  // 8) Build enriched candidate with fresh levels + risk sizing
   const enriched: ScoredCandidate = {
     ...candidate,
-    sl: riskResult.sl,
-    tp1: riskResult.tp1,
-    tp2: riskResult.tp2,
+    // SL/TP from computeLevels (manual params — deterministic)
+    sl: levels.slPrice,
+    tp1: levels.tp1Price ?? levels.tp2Price,
+    tp2: levels.tp2Price,
+    tp1Price: levels.tp1Price,
+    // Risk sizing for qty/notional display
     qty: riskResult.qty,
     riskUSDT: riskResult.riskUSDT,
     notionalUSDT: riskResult.notionalUSDT,
     effectiveLeverage: riskResult.effectiveLeverage,
     marginUsed: riskResult.marginUsed,
-    riskCalcValid: true,
+    riskCalcValid: levels.valid,
+    // Risk & Leverage Controls
+    leverageX,
+    slPct,
+    rr,
+    realRiskPct,
   };
 
-  // 9) HTF Context Gate — 5m trend must align with trade side (mandatory, cannot bypass)
-  // NOTE: risk calc happens BEFORE HTF so that shadow trades can reuse the enriched candidate
-  const tfBufs5m = internals.rsiBuffers.get(sym);
-  const closes5m: number[] = tfBufs5m?.["5m"] ?? [];
-  const htfResult = checkHtfGate(closes5m, candidate.side, config.rsiPeriod);
-
-  if (!htfResult.permitted) {
-    emitEvent(
-      "ENTRY_BLOCKED_HTF",
-      {
-        symbol: sym,
-        side: candidate.side,
-        ema9_5m: htfResult.ema9_5m,
-        ema20_5m: htfResult.ema20_5m,
-        rsi5m: htfResult.rsi5m,
-        reason: htfResult.reason,
-      },
-      "TRADES",
-    );
-    emitEvent(
-      "AUTO_ENTRY_BLOCKED",
-      { symbol: sym, reason: "ENTRY_BLOCKED_HTF", detail: htfResult.reason },
-      "TRADES",
-    );
-
-    // ── SHADOW STATS: StageA+StageB+RiskCalc passed, but HTF blocked live entry ──
-    // Create a shadow trade to simulate what would have happened without the HTF filter.
-    // Real trade remains blocked. Shadow mode is 100% analytical only.
-    let shadowTrade: ShadowTrade | null = null;
-    if (config.enableShadowStats) {
-      const alreadyShadowOpen = openShadowTrades.some(
-        (st) => st.symbol === sym && st.status === "OPEN",
-      );
-      if (!alreadyShadowOpen) {
-        shadowTrade = await openShadowTrade(enriched);
-      }
-    }
-
-    return { trade: null, shadowTrade };
-  }
-
-  emitEvent(
-    "HTF_GATE_PASS",
-    {
-      symbol: sym,
-      side: candidate.side,
-      ema9_5m: htfResult.ema9_5m,
-      ema20_5m: htfResult.ema20_5m,
-      rsi5m: htfResult.rsi5m,
-    },
-    "TRADES",
-  );
-
-  // 10) Open real trade
+  // 9) Open real trade
   const trade = await openTrade(enriched, config, openTrades, localRunId);
 
   if (internals.runId !== localRunId) {
@@ -553,37 +589,25 @@ async function tryAutoEntry(
   return { trade, shadowTrade: null };
 }
 
-async function runPollingLoop(
+function startScheduler(
   internals: EngineInternals,
   config: ScannerConfig,
   callbacks: EngineCallbacks,
   initialOpenTrades: Trade[],
   initialShadowTrades: ShadowTrade[],
   localRunId: number,
-): Promise<void> {
+): void {
   const getCurrentRunId = () => internals.runId;
+
+  // Mutable state captured in closure — updated after each cycle
   let openTrades = initialOpenTrades;
   let shadowTrades = initialShadowTrades;
 
-  // Run first cycle immediately
-  const first = await runCycle(
-    internals,
-    config,
-    callbacks,
-    openTrades,
-    shadowTrades,
-    localRunId,
-    getCurrentRunId,
-  );
-  openTrades = first.openTrades;
-  shadowTrades = first.shadowTrades;
-  if (getCurrentRunId() !== localRunId) return;
-
-  // Schedule subsequent cycles
-  const schedule = () => {
-    internals.pollTimer = setTimeout(async () => {
-      if (getCurrentRunId() !== localRunId) return;
-
+  const safeTick = async () => {
+    // Prevent overlapping cycles
+    if (isTickRunning) return;
+    isTickRunning = true;
+    try {
       const result = await runCycle(
         internals,
         config,
@@ -595,14 +619,27 @@ async function runPollingLoop(
       );
       openTrades = result.openTrades;
       shadowTrades = result.shadowTrades;
-
-      if (getCurrentRunId() === localRunId) {
-        schedule();
-      }
-    }, config.pollInterval);
+    } catch (err) {
+      const error = err as { message?: string; stack?: string } | null;
+      emitEvent(
+        "CYCLE_ERROR",
+        {
+          message: String(error?.message ?? err),
+          stack: String(error?.stack ?? ""),
+        },
+        "ERROR",
+      );
+    } finally {
+      isTickRunning = false;
+    }
   };
 
-  schedule();
+  // Clear any pre-existing interval before starting
+  stopScheduler();
+
+  // Fire immediately, then on every pollInterval
+  safeTick();
+  intervalHandle = window.setInterval(safeTick, config.pollInterval);
 }
 
 const STAGEA_RESCUE_DELTA = 3;
@@ -617,54 +654,36 @@ async function runCycle(
   localRunId: number,
   getCurrentRunId: () => number,
 ): Promise<{ openTrades: Trade[]; shadowTrades: ShadowTrade[] }> {
-  // NOTE: heartbeat tick is now in the separate setInterval — do NOT update tick here
+  // NOTE: heartbeat tick is handled by independent setInterval — do NOT update it here.
+  // NOTE: universe refresh is handled by its own 90s setInterval — do NOT call buildUniverse here.
   internals.cycleCount++;
 
   if (getCurrentRunId() !== localRunId) return { openTrades, shadowTrades };
 
-  const isFullScan = internals.cycleCount % FULL_SCAN_INTERVAL_CYCLES === 1;
+  // Scan cycle: fetch incremental klines for shortlist + open trades only.
+  // Full universe kline refresh uses the stage-A shortlist from the previous cycle.
+  const shortlistSymbols = [
+    ...new Set([
+      ...internals.lastStageALong.slice(0, STAGE_A_K).map((c) => c.symbol),
+      ...internals.lastStageAShort.slice(0, STAGE_A_K).map((c) => c.symbol),
+      ...openTrades.map((t) => t.symbol),
+    ]),
+  ];
 
-  if (isFullScan) {
-    const universeResult = await buildUniverse(
-      config,
-      internals.universe,
-      localRunId,
-      getCurrentRunId,
-    );
-    if (getCurrentRunId() !== localRunId) return { openTrades, shadowTrades };
-    internals.universe = universeResult.symbols;
-    callbacks.onUniverseUpdate(
-      universeResult.symbols.length,
-      universeResult.eligibleCount,
-      universeResult.filterLevelUsed,
-      universeResult.retainedUsed,
-    );
+  // On first cycle shortlist is empty — fetch the full universe to seed buffers
+  const fetchSymbols =
+    shortlistSymbols.length > 0
+      ? shortlistSymbols
+      : internals.universe.map((s) => s.symbol);
 
-    await fetchIncrementalKlines(
-      internals.universe.map((s) => s.symbol),
-      internals.rsiBuffers,
-      internals.rawKlineBuffers,
-      config.rsiPeriod,
-      localRunId,
-      getCurrentRunId,
-    );
-  } else {
-    const shortlistSymbols = [
-      ...new Set([
-        ...internals.lastStageALong.slice(0, 60).map((c) => c.symbol),
-        ...internals.lastStageAShort.slice(0, 60).map((c) => c.symbol),
-        ...openTrades.map((t) => t.symbol),
-      ]),
-    ];
-    await fetchIncrementalKlines(
-      shortlistSymbols,
-      internals.rsiBuffers,
-      internals.rawKlineBuffers,
-      config.rsiPeriod,
-      localRunId,
-      getCurrentRunId,
-    );
-  }
+  await fetchIncrementalKlines(
+    fetchSymbols,
+    internals.rsiBuffers,
+    internals.rawKlineBuffers,
+    config.rsiPeriod,
+    localRunId,
+    getCurrentRunId,
+  );
 
   if (getCurrentRunId() !== localRunId) return { openTrades, shadowTrades };
 
@@ -764,6 +783,66 @@ async function runCycle(
     internals.rsiBuffers,
   );
 
+  // ── HTF mode: OFF / SOFT / HARD ──────────────────────────────────────────
+  // OFF  → skip entirely
+  // SOFT → reduce score 10% on counter-trend bias (never blocks)
+  // HARD → remove candidate from Top5 if opposing bias
+  const htfMode = config.htfMode ?? "SOFT";
+
+  if (htfMode !== "OFF") {
+    const allCandidatesForHtf = [...top5Long, ...top5Short];
+    const toRemove = new Set<string>();
+
+    for (const candidate of allCandidatesForHtf) {
+      const closes5m: number[] =
+        internals.rsiBuffers.get(candidate.symbol)?.["5m"] ?? [];
+      const htf = evaluateHtfGate(closes5m);
+
+      const isOpposite =
+        (candidate.side === "LONG" && htf.bias === "SHORT") ||
+        (candidate.side === "SHORT" && htf.bias === "LONG");
+
+      if (!isOpposite) continue;
+
+      if (htfMode === "SOFT") {
+        // Reduce score by 10% — entry is never blocked
+        candidate.score = candidate.score * 0.9;
+        emitEvent(
+          "HTF_SOFT_BIAS",
+          {
+            symbol: candidate.side,
+            side: candidate.side,
+            bias: htf.bias,
+            scoreMult: 0.9,
+          },
+          "STAGE",
+        );
+      } else if (htfMode === "HARD") {
+        // Mark for removal — strict gate
+        toRemove.add(`${candidate.symbol}:${candidate.side}`);
+        emitEvent(
+          "ENTRY_BLOCKED_HTF",
+          {
+            symbol: candidate.symbol,
+            side: candidate.side,
+            bias: htf.bias,
+            emaFast: htf.emaFast,
+            emaSlow: htf.emaSlow,
+            rsi: htf.rsi,
+          },
+          "STAGE",
+        );
+      }
+    }
+
+    if (htfMode === "HARD" && toRemove.size > 0) {
+      const filterFn = (c: ScoredCandidate) =>
+        !toRemove.has(`${c.symbol}:${c.side}`);
+      top5Long.splice(0, top5Long.length, ...top5Long.filter(filterFn));
+      top5Short.splice(0, top5Short.length, ...top5Short.filter(filterFn));
+    }
+  }
+
   emitEvent(
     "TOP5",
     {
@@ -799,7 +878,6 @@ async function runCycle(
   callbacks.onTradesUpdate(updatedTrades);
 
   // ── SHADOW POSITION MONITORING ──────────────────────────────────────────
-  // Reuses same closed-candle prices — no additional Binance calls
   let runningShadowTrades = shadowTrades;
   if (config.enableShadowStats) {
     const updatedShadow = await updateShadowTrades(
@@ -815,7 +893,6 @@ async function runCycle(
     return { openTrades: activeOpenTrades, shadowTrades: runningShadowTrades };
 
   // ── AUTO-ENTRY GATE ──────────────────────────────────────────────────────
-  // Collect all StageB-passing candidates from both sides
   const allCandidates: ScoredCandidate[] = [...top5Long, ...top5Short];
   let runningOpenTrades = [...activeOpenTrades];
   const openShadowList = runningShadowTrades.filter(
@@ -831,7 +908,6 @@ async function runCycle(
       config,
       callbacks,
       runningOpenTrades,
-      openShadowList,
       localRunId,
     );
 
@@ -871,6 +947,7 @@ export async function runEngineStop(
   callbacks.onStateChange("STOPPING");
 
   stopTimers(internals);
+  stopScheduler();
 
   // Bump runId to cancel all ongoing async ops
   internals.runId++;

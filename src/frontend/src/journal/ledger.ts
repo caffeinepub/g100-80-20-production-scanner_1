@@ -74,6 +74,8 @@ const EVENT_CATEGORIES: Record<string, EventCategory> = {
   // Shadow Stats module — HTF_OFF parallel simulation
   SHADOW_ENTRY_CREATED: "TRADES",
   SHADOW_TRADE_CLOSED: "TRADES",
+  // Scheduler stability — persistent loop error capture
+  CYCLE_ERROR: "ERROR",
 };
 
 // In-memory event store
